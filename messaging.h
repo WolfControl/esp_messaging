@@ -51,8 +51,8 @@ extern esp_now_peer_info_t broadcastPeer;
 extern TaskHandle_t receiveSerialTaskHandle, receiveESPNowTaskHandle, sendESPNowTaskHandle, sendSerialTaskHandle, serialDaemonTaskHandle;
 extern QueueHandle_t incomingESPNowQueue, outgoingESPNowQueue, incomingSerialQueue, outgoingSerialQueue;
 
-extern const int txPin;
-extern const int rxPin;
+extern int txPin;
+extern int rxPin;
 
 /*-------------- Callbacks & ISRs --------------*/
 
@@ -90,7 +90,7 @@ esp_err_t setupESPNow (jsonHandler jsonhandler);
  * 
  * @note Sets up UART driver, event queues, and tasks.
 */
-esp_err_t setupSerial(jsonHandler jsonhandler, binaryHandler binaryhandler, const int txPin, const int rxPin);
+esp_err_t setupSerial(jsonHandler jsonhandler, binaryHandler binaryhandler, int txPin, int rxPin);
 
 /*-------------- RTOS Tasks --------------*/
 

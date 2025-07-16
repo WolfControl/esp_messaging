@@ -148,7 +148,7 @@ esp_err_t setupESPNow (jsonHandler jsonhandler)
     return ESP_OK;
 }
 
-esp_err_t setupSerial(jsonHandler jsonhandler, binaryHandler binaryhandler, const int txPin, const int rxPin) {
+esp_err_t setupSerial(jsonHandler jsonhandler, binaryHandler binaryhandler, int txPin, int rxPin) {
     const char*TAG = "setupSerial";
 
     ESP_LOGD(TAG, "Setting UART parameters...");

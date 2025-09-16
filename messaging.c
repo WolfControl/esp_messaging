@@ -330,30 +330,24 @@ void receiveSerialTask(void* pvParameters) {
 
     while (1) {
         if (xQueueReceive(incomingSerialQueue, &msg, portMAX_DELAY) == pdTRUE) {
-            ESP_LOGI(TAG, "Received message. Type: %u, Length: %lu", msg->type, msg->length);
-
             if (msg->type == 0x01 && handlers->jsonHandler) {  // JSON Message
-                ESP_LOGD(TAG, "Parsing JSON...");
                 const char* errorPtr;
                 cJSON* incomingJSON = cJSON_ParseWithOpts((char*)msg->payload, &errorPtr, 0);
 
                 if (!incomingJSON) {
                     ESP_LOGE(TAG, "Failed to parse incoming JSON: Error at %s", errorPtr);
                 } else {
-                    ESP_LOGI(TAG, "Passing data to JSON handler...");
                     handlers->jsonHandler(incomingJSON);
                     cJSON_Delete(incomingJSON);
                 }
             } 
             else if (msg->type == 0x02 && handlers->binHandler) {  // Binary Message
-                ESP_LOGI(TAG, "Passing binary data to handler...");
                 handlers->binHandler(msg->payload, msg->length);
             } 
             else {
                 ESP_LOGE(TAG, "Unknown or unhandled message type: %u", msg->type);
             }
 
-            ESP_LOGD(TAG, "Freeing memory...");
             free(msg);
         }
     }
@@ -404,7 +398,7 @@ void listenSerialDaemon(void* pvParameters) {
                         msgType = headerBuffer[0];
                         payloadLength = *((uint32_t*)&headerBuffer[1]);
                         
-                        ESP_LOGI(TAG, "Received Header - Type: %u, Length: %lu", msgType, payloadLength);
+                        //ESP_LOGI(TAG, "Received Header - Type: %u, Length: %lu", msgType, payloadLength);
                         
                         // Simple sanity checks
                         if ((msgType != 0x01 && msgType != 0x02) || 
@@ -460,8 +454,7 @@ void listenSerialDaemon(void* pvParameters) {
                     
                     if (readBytes > 0) {
                         bytesRead += readBytes;
-                        ESP_LOGD(TAG, "Read %d payload bytes, total %lu/%lu", 
-                                readBytes, bytesRead, payloadLength);
+                        //ESP_LOGD(TAG, "Read %d payload bytes", readBytes);
                         
                         // Update stall tracking - progress was made
                         lastBytesRead = bytesRead;
@@ -474,13 +467,11 @@ void listenSerialDaemon(void* pvParameters) {
                         if (msgType == 0x01) {
                             currentMsg->payload[payloadLength] = '\0';
                         }
-                        
-                        ESP_LOGD(TAG, "Payload complete, dispatching message");
-                        
+                                                
                         // Send to queue for processing
                         SerialMessage* msgToSend = currentMsg;
                         if (xQueueSend(incomingSerialQueue, &msgToSend, pdMS_TO_TICKS(100)) != pdTRUE) {
-                            ESP_LOGE(TAG, "Failed to send to queue");
+                            ESP_LOGE(TAG, "Failed to dispatch payload to queue");
                             free(currentMsg);
                         }
                         

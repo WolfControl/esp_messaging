@@ -41,6 +41,7 @@ typedef struct __attribute__((packed)) {
     uint32_t length;    // Length of the message payload
     uint8_t payload[];  // Flexible array member for message data
 } ESPNowPacket;
+
 typedef struct {
     ESPNowPacket* packet;  // Pointer to the packet structure  
     uint8_t destinationMAC[ESP_NOW_ETH_ALEN];

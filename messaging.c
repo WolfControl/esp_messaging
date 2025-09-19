@@ -6,7 +6,7 @@ void OnESPNowSend(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
     static const char *TAG = "OnESPNowSend";
 
-    ESP_LOGD(TAG, "Last Packet Send Status: %d", status == ESP_NOW_SEND_SUCCESS);
+    //ESP_LOGD(TAG, "Last Packet Send Status: %d", status == ESP_NOW_SEND_SUCCESS);
 }
 
 void OnESPNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) 
@@ -18,17 +18,14 @@ void OnESPNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingD
     ESP_LOGI(TAG, "Received %d bytes from %02x:%02x:%02x:%02x:%02x:%02x", len, 
              mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 
-    ESP_LOGD(TAG, "Allocating memory for incoming data...");
     uint8_t* incomingDataCopy = (uint8_t*)malloc(len);
     if (incomingDataCopy == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for data, dropping packet");
         return;
     }
 
-    ESP_LOGD(TAG, "Copying incoming data to allocated memory...");
     memcpy(incomingDataCopy, incomingData, len);
 
-    ESP_LOGD(TAG, "Posting pointer to incomingESPNowQueue...");
     if (xQueueSend(incomingESPNowQueue, &incomingDataCopy, 0) != pdTRUE) {
         ESP_LOGE(TAG, "Failed to send packet to incomingESPNowQueue queue");
         free(incomingDataCopy);
@@ -249,23 +246,13 @@ void sendESPNowTask(void *pvParameters)
     while(1){
         if (xQueueReceive(outgoingESPNowQueue, &message, portMAX_DELAY) == pdTRUE)
         {
-            ESP_LOGD(TAG, "Received message from outgoingESPNowQueue, type: %u, length: %lu", 
-                     message.packet->type, message.packet->length);
-            ESP_LOGD(TAG, "Sending to %02x:%02x:%02x:%02x:%02x:%02x", 
-                     message.destinationMAC[0], message.destinationMAC[1], 
-                     message.destinationMAC[2], message.destinationMAC[3], 
-                     message.destinationMAC[4], message.destinationMAC[5]);
-
             size_t totalSize = sizeof(ESPNowPacket) + message.packet->length;
             esp_err_t result = esp_now_send(message.destinationMAC, (uint8_t*)message.packet, totalSize);
 
             if (result == ESP_OK) {
-                ESP_LOGD(TAG, "Published packet to ESP-NOW");
             } else {
                 ESP_LOGE(TAG, "Error: %s", esp_err_to_name(result));
             }
-
-            ESP_LOGD(TAG, "Freeing memory...");
             free(message.packet);
         }
     }
@@ -315,7 +302,6 @@ void receiveESPNowTask(void* pvParameters)
     const char* errorPtr;
 
     while (1) {
-        ESP_LOGD(TAG, "Waiting for incoming data...");
         if (xQueueReceive(incomingESPNowQueue, &incomingData, portMAX_DELAY) == pdTRUE) {
             
             ESPNowPacket* packet = (ESPNowPacket*)incomingData;
@@ -331,14 +317,12 @@ void receiveESPNowTask(void* pvParameters)
                 }
             } 
             else if (packet->type == 0x02 && handlers->binHandler) {  // Binary Message
-                ESP_LOGD(TAG, "Processing binary message");
                 handlers->binHandler(packet->payload, packet->length);
             } 
             else {
                 ESP_LOGE(TAG, "Unknown or unhandled message type: %u", packet->type);
             }
 
-            ESP_LOGD(TAG, "Freeing memory...");
             free(incomingData);
         }
     }
@@ -659,7 +643,6 @@ esp_err_t sendBinaryESPNow(uint8_t* data, size_t length, const uint8_t* destinat
     message.packet = packet;
     memcpy(message.destinationMAC, destinationMAC, ESP_NOW_ETH_ALEN);
 
-    ESP_LOGD(TAG, "Posting binary message to outgoingESPNowQueue...");
     if (xQueueSend(outgoingESPNowQueue, &message, 0) != pdTRUE) {
         ESP_LOGE(TAG, "Failed to send binary message to queue");
         free(packet);

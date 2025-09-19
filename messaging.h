@@ -36,10 +36,17 @@ typedef void (*jsonHandler)(cJSON* incomingMessage);
 // binaryHandler can be any user defined function so long as it takes the binary data as a uint8_t pointer and length as a size_t
 typedef void (*binaryHandler)(uint8_t* data, size_t length);
 
+typedef struct __attribute__((packed)) {
+    uint8_t type;       // 0x01 = JSON, 0x02 = Binary
+    uint32_t length;    // Length of the message payload
+    uint8_t payload[];  // Flexible array member for message data
+} ESPNowPacket;
 typedef struct {
-    char* bodyserialized;
+    ESPNowPacket* packet;  // Pointer to the packet structure  
     uint8_t destinationMAC[ESP_NOW_ETH_ALEN];
 } ESPNowMessage;
+
+
 
 typedef struct __attribute__((packed)) {
     uint8_t type;       // 0x01 = JSON, 0x02 = Binary
@@ -69,11 +76,13 @@ void OnESPNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingD
  * 
  * @param jsonhandler User defined function to handle incoming messages. Expects a cJSON pointer.
  * 
+ * @param binaryhandler User defined function to handle incoming binary data. Expects a uint8_t pointer and size_t.
+ * 
  * @return ESP_OK if successful, ESP_FAIL if not.
  * 
  * @note Sets up wifi stack, sets callbacks, creates queues and tasks.
 */
-esp_err_t setupESPNow (jsonHandler jsonhandler);
+esp_err_t setupESPNow(jsonHandler jsonhandler, binaryHandler binaryhandler);
 
 /**
  * @brief Sets up components necessary for messaging via UART.
@@ -163,6 +172,7 @@ esp_err_t sendMessageSerial(cJSON* body);
 */
 esp_err_t sendMessageESPNow(cJSON* body, const uint8_t* destinationMAC);
 
+esp_err_t sendBinaryESPNow(uint8_t* data, size_t length, const uint8_t* destinationMAC);
 
 #ifdef __cplusplus
 }

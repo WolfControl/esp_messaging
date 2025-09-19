@@ -13,13 +13,13 @@ void OnESPNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingD
 {
     static const char *TAG = "OnESPNowRecv";
 
-    const uint8_t *mac_addr = recv_info->src_addr;  // Extract MAC address from the struct
+    const uint8_t *mac_addr = recv_info->src_addr;
 
     ESP_LOGI(TAG, "Received %d bytes from %02x:%02x:%02x:%02x:%02x:%02x", len, 
              mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 
     ESP_LOGD(TAG, "Allocating memory for incoming data...");
-    uint8_t* incomingDataCopy = (uint8_t*)calloc(len, sizeof(uint8_t));
+    uint8_t* incomingDataCopy = (uint8_t*)malloc(len);
     if (incomingDataCopy == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for data, dropping packet");
         return;
@@ -39,7 +39,7 @@ void OnESPNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingD
 
 /*---------- Setup Functions ----------*/
 
-esp_err_t setupESPNow (jsonHandler jsonhandler)
+esp_err_t setupESPNow (jsonHandler jsonhandler,  binaryHandler binaryhandler)
 {
     static const char *TAG = "setupESPNow";
     esp_err_t ret = ESP_OK;
@@ -132,8 +132,23 @@ esp_err_t setupESPNow (jsonHandler jsonhandler)
         return ESP_FAIL;
     }
 
-    ESP_LOGD(TAG, "Starting receive task with abstract handler...");
-    if (pdPASS != xTaskCreate(receiveESPNowTask, "listenESPNow_task", TASK_STACK_SIZE, jsonhandler, TASK_PRIORITY, &receiveESPNowTaskHandle)) {
+    ESP_LOGD(TAG, "Starting receive task with abstract handlers...");
+
+    // Allocate handlers struct on heap
+    struct {
+        jsonHandler jsonHandler;
+        binaryHandler binHandler;
+    } *handlers = malloc(sizeof(*handlers));
+
+    if (handlers == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for handlers");
+        return ESP_FAIL;
+    }
+
+    handlers->jsonHandler = jsonhandler;
+    handlers->binHandler = binaryhandler;
+
+    if (pdPASS != xTaskCreate(receiveESPNowTask, "listenESPNow_task", TASK_STACK_SIZE, handlers, TASK_PRIORITY, &receiveESPNowTaskHandle)) {
         ESP_LOGE(TAG, "Failed to create listener task");
         return ESP_FAIL;
     }
@@ -229,29 +244,29 @@ esp_err_t setupSerial(jsonHandler jsonhandler, binaryHandler binaryhandler, int 
 void sendESPNowTask(void *pvParameters)
 {
     static const char *TAG = "sendESPNowTask";
-    ESPNowMessage outgoingMessage;
+    ESPNowMessage message;
 
     while(1){
-        // Receive the Message struct from the queue
-        if (xQueueReceive(outgoingESPNowQueue, &outgoingMessage, portMAX_DELAY) == pdTRUE)
+        if (xQueueReceive(outgoingESPNowQueue, &message, portMAX_DELAY) == pdTRUE)
         {
+            ESP_LOGD(TAG, "Received message from outgoingESPNowQueue, type: %u, length: %lu", 
+                     message.packet->type, message.packet->length);
+            ESP_LOGD(TAG, "Sending to %02x:%02x:%02x:%02x:%02x:%02x", 
+                     message.destinationMAC[0], message.destinationMAC[1], 
+                     message.destinationMAC[2], message.destinationMAC[3], 
+                     message.destinationMAC[4], message.destinationMAC[5]);
 
-            ESP_LOGD(TAG, "Received message from outgoingESPNowQueue: %s", outgoingMessage.bodyserialized);
-            ESP_LOGD(TAG, "Sending to %02x:%02x:%02x:%02x:%02x:%02x", outgoingMessage.destinationMAC[0], outgoingMessage.destinationMAC[1], outgoingMessage.destinationMAC[2], outgoingMessage.destinationMAC[3], outgoingMessage.destinationMAC[4], outgoingMessage.destinationMAC[5]);
-
-            int len = strlen(outgoingMessage.bodyserialized) + 1;
-
-            esp_err_t result = esp_now_send(outgoingMessage.destinationMAC, (uint8_t *) outgoingMessage.bodyserialized, len); 
+            size_t totalSize = sizeof(ESPNowPacket) + message.packet->length;
+            esp_err_t result = esp_now_send(message.destinationMAC, (uint8_t*)message.packet, totalSize);
 
             if (result == ESP_OK) {
-                ESP_LOGD(TAG, "Published packet to ESP-NOW: %s", outgoingMessage.bodyserialized);
-            }
-            else {
+                ESP_LOGD(TAG, "Published packet to ESP-NOW");
+            } else {
                 ESP_LOGE(TAG, "Error: %s", esp_err_to_name(result));
             }
 
             ESP_LOGD(TAG, "Freeing memory...");
-            free(outgoingMessage.bodyserialized);    
+            free(message.packet);
         }
     }
 }
@@ -287,28 +302,41 @@ void sendSerialTask(void *pvParameters) {
 }
 
 
-void receiveESPNowTask (void* pvParameters)
+void receiveESPNowTask(void* pvParameters)
 {
     static const char *TAG = "receiveESPNowTask";
-    jsonHandler handler = (jsonHandler)pvParameters;
+    
+    struct {
+        jsonHandler jsonHandler;
+        binaryHandler binHandler;
+    } *handlers = pvParameters;
+    
     uint8_t* incomingData;
     const char* errorPtr;
 
     while (1) {
         ESP_LOGD(TAG, "Waiting for incoming data...");
         if (xQueueReceive(incomingESPNowQueue, &incomingData, portMAX_DELAY) == pdTRUE) {
-            ESP_LOGD(TAG, "Received message from incomingESPNowQueue: %s", incomingData);
-
-            ESP_LOGD(TAG, "Parsing JSON...");
-            cJSON* incomingJSON = cJSON_ParseWithOpts((char*) incomingData, &errorPtr, 0);
-
-            if (incomingJSON == NULL) {
-                ESP_LOGE(TAG, "Failed to parse incoming JSON: Error at %s", errorPtr);
-                continue;
+            
+            ESPNowPacket* packet = (ESPNowPacket*)incomingData;
+            
+            if (packet->type == 0x01 && handlers->jsonHandler) {  // JSON Message
+                ESP_LOGD(TAG, "Processing JSON message");
+                
+                cJSON* incomingJSON = cJSON_ParseWithOpts((char*)packet->payload, &errorPtr, 0);
+                if (incomingJSON == NULL) {
+                    ESP_LOGE(TAG, "Failed to parse JSON: Error at %s", errorPtr);
+                } else {
+                    handlers->jsonHandler(incomingJSON);
+                }
+            } 
+            else if (packet->type == 0x02 && handlers->binHandler) {  // Binary Message
+                ESP_LOGD(TAG, "Processing binary message");
+                handlers->binHandler(packet->payload, packet->length);
+            } 
+            else {
+                ESP_LOGE(TAG, "Unknown or unhandled message type: %u", packet->type);
             }
-
-            ESP_LOGI(TAG, "Passing data to abstract handler...");
-            handler(incomingJSON);
 
             ESP_LOGD(TAG, "Freeing memory...");
             free(incomingData);
@@ -560,24 +588,85 @@ esp_err_t sendMessageSerial(cJSON* body)
 esp_err_t sendMessageESPNow(cJSON* body, const uint8_t* destinationMAC)
 {
     static const char* TAG = "sendMessageESPNow";
-    ESPNowMessage outgoingMessage;
-
-    ESP_LOGD(TAG, "Creating ESPNowMessage...");
-    outgoingMessage.bodyserialized = cJSON_PrintUnformatted(body);
-
-    ESP_LOGD(TAG, "Copying destination MAC address to ESPNowMessage struct...");
-    memcpy(outgoingMessage.destinationMAC, destinationMAC, ESP_NOW_ETH_ALEN);
-
-    ESP_LOGD(TAG, "Posting to outgoingESPNowQueue...");
-    if (xQueueSend(outgoingESPNowQueue, &outgoingMessage, 0) != pdTRUE) {
-        ESP_LOGE(TAG, "Failed to send struct to outgoingESPNowQueue queue");
+    
+    ESP_LOGD(TAG, "Serializing JSON...");
+    char* bodySerialized = cJSON_PrintUnformatted(body);
+    if (bodySerialized == NULL) {
+        ESP_LOGE(TAG, "Failed to serialize JSON");
         cJSON_Delete(body);
         return ESP_FAIL;
     }
 
+    // Calculate packet size
+    size_t bodyLength = strlen(bodySerialized);
+    size_t packetSize = sizeof(ESPNowPacket) + bodyLength + 1; // +1 for null terminator
+
+    // Allocate memory for the packet
+    ESPNowPacket* packet = (ESPNowPacket*)malloc(packetSize);
+    if (packet == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for ESPNow packet");
+        free(bodySerialized);
+        cJSON_Delete(body);
+        return ESP_FAIL;
+    }
+
+    // Populate the packet
+    packet->type = 0x01;  // JSON type
+    packet->length = bodyLength;
+    memcpy(packet->payload, bodySerialized, bodyLength + 1); // Copy JSON data with null terminator
+
+    // Create the message structure
+    ESPNowMessage message;
+    message.packet = packet;
+    memcpy(message.destinationMAC, destinationMAC, ESP_NOW_ETH_ALEN);
+
+    ESP_LOGD(TAG, "Posting to outgoingESPNowQueue...");
+    if (xQueueSend(outgoingESPNowQueue, &message, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to send message to outgoingESPNowQueue");
+        free(packet);
+        free(bodySerialized);
+        cJSON_Delete(body);
+        return ESP_FAIL;
+    }
+
+    // Clean up
+    free(bodySerialized);
     cJSON_Delete(body);
     return ESP_OK;
 }
 
+esp_err_t sendBinaryESPNow(uint8_t* data, size_t length, const uint8_t* destinationMAC)
+{
+    static const char* TAG = "sendBinaryESPNow";
+    
+    // Calculate packet size
+    size_t packetSize = sizeof(ESPNowPacket) + length;
+
+    // Allocate memory for the packet
+    ESPNowPacket* packet = (ESPNowPacket*)malloc(packetSize);
+    if (packet == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for binary packet");
+        return ESP_FAIL;
+    }
+
+    // Populate the packet
+    packet->type = 0x02;  // Binary type
+    packet->length = length;
+    memcpy(packet->payload, data, length);
+
+    // Create the message structure
+    ESPNowMessage message;
+    message.packet = packet;
+    memcpy(message.destinationMAC, destinationMAC, ESP_NOW_ETH_ALEN);
+
+    ESP_LOGD(TAG, "Posting binary message to outgoingESPNowQueue...");
+    if (xQueueSend(outgoingESPNowQueue, &message, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to send binary message to queue");
+        free(packet);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
 
 // EoF
